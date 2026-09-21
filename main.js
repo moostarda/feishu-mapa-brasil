@@ -11,11 +11,13 @@ const GEOJSON_URLS = [
   'https://raw.githubusercontent.com/henriquemalvar/br-geojson/main/dist/estados.geojson',
   'https://cdn.jsdelivr.net/gh/henriquemalvar/br-geojson@main/dist/estados.geojson'
 ];
+const params = new URLSearchParams(location.search);
+const DASHBOARD_MODE = params.has('isConfig') || params.has('dashboardId') || params.has('blockId');
 const state = { rows: [], metric: 'ticket', filters: { ano:'', mes:'', executivo:'', time:'' }, map:null, layer:null, geojson:null };
 
 const app = document.querySelector('#app');
 app.innerHTML = `<main>
-<header><div><h1>Mapa Comercial Brasil <small style="font-size:12px;color:#2563eb">V5</small></h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
+<header><div><h1>Mapa Comercial Brasil <small class="version">V6 DASHBOARD</small></h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
 <section class="controls">
 <label>Indicador<select id="metric"><option value="ticket">Ticket Médio</option><option value="receita">Receita</option><option value="pedidos">Pedidos</option><option value="pedidos5kg">Pedidos 5kg</option></select></label>
 <label>Ano<select id="ano"><option value="">Todos</option></select></label>
@@ -24,7 +26,7 @@ app.innerHTML = `<main>
 <label>Time<select id="time"><option value="">Todos</option></select></label>
 </section>
 <section class="cards"><div><span>Ticket médio</span><strong id="kpiTicket">—</strong></div><div><span>Receita</span><strong id="kpiReceita">—</strong></div><div><span>Pedidos</span><strong id="kpiPedidos">—</strong></div><div><span>UFs com dados</span><strong id="kpiUfs">—</strong></div></section>
-<div id="status">Carregando dados do Feishu…</div><div id="mapWrap"><div id="map"></div><div id="legend"></div></div></main>`;
+<div id="status" class="status">Carregando dados do Feishu…</div><div id="mapWrap"><div id="map"></div><div id="legend"></div></div></main>`;
 
 const num = v => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
@@ -43,13 +45,7 @@ const text = v => {
 const brl = v => new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v||0);
 const integer = v => new Intl.NumberFormat('pt-BR',{maximumFractionDigits:0}).format(v||0);
 const diagLines = [];
-function diag(label, value='') {
-  let out;
-  try { out = typeof value === 'string' ? value : JSON.stringify(value, (k,v)=> typeof v === 'function' ? '[function]' : v, 2); }
-  catch { out = String(value); }
-  diagLines.push(`${label}: ${out}`);
-  const el = document.querySelector('#diag'); if (el) el.textContent = diagLines.join('\n');
-}
+function diag(label, value='') { console.debug('[Mapa Brasil V6]', label, value); }
 function errText(e){ return `${e?.name||'Error'}: ${e?.message||String(e)}`; }
 
 async function getAllRecords(table) {
@@ -75,7 +71,9 @@ async function getAllRecords(table) {
 async function loadRows() {
   diagLines.length = 0;
   setStatus('Carregando dados do Feishu…');
-  diag('Versão', 'V5');
+  diag('Versão', 'V6 Dashboard');
+  diag('Dashboard mode', DASHBOARD_MODE);
+  diag('Dashboard SDK', !!bitable?.dashboard);
   diag('SDK bitable', !!bitable);
   diag('base disponível', !!bitable?.base);
   let table = null;
@@ -142,7 +140,7 @@ async function loadRows() {
   fillFilters(); await render(); setStatus(`${state.rows.length} registros carregados`);
 }
 
-function setStatus(s){ document.querySelector('#status').textContent = s; }
+function setStatus(s){ const el=document.querySelector('#status'); el.textContent=s; el.classList.toggle('ok', /registros carregados/.test(s)); }
 function fillFilters(){ ['ano','mes','executivo','time'].forEach(k=>{ const el=document.querySelector('#'+k), old=el.value; const values=[...new Set(state.rows.map(r=>r[k]).filter(Boolean))].sort((a,b)=>String(a).localeCompare(String(b),'pt-BR',{numeric:true})); el.innerHTML='<option value="">Todos</option>'+values.map(v=>`<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join(''); el.value=values.includes(old)?old:''; state.filters[k]=el.value; }); }
 function escapeHtml(v){ return String(v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function filtered(){ return state.rows.filter(r=>Object.entries(state.filters).every(([k,v])=>!v||r[k]===v)); }
@@ -189,5 +187,7 @@ async function render(){
 document.querySelector('#metric').addEventListener('change',e=>{state.metric=e.target.value;render().catch(showError);});
 ['ano','mes','executivo','time'].forEach(k=>document.querySelector('#'+k).addEventListener('change',e=>{state.filters[k]=e.target.value;render().catch(showError);}));
 document.querySelector('#reload').addEventListener('click',()=>loadRows().catch(showError));
-function showError(e){ console.error(e); setStatus('Erro: '+(e?.message||e)); }
+function showError(e){ console.error(e); setStatus('Erro: '+(e?.message||e)); document.body.classList.add('has-error'); }
+const ro = new ResizeObserver(()=>{ if(state.map) setTimeout(()=>state.map.invalidateSize(),50); });
+ro.observe(document.documentElement);
 loadRows().catch(showError);
