@@ -61,9 +61,44 @@ async function getAllRecords(table) {
 
 async function loadRows() {
   setStatus('Carregando dados do Feishu…');
-  const table = typeof bitable.base.getActiveTable === 'function'
-    ? await bitable.base.getActiveTable()
-    : await bitable.base.getTableById((await bitable.base.getSelection()).tableId);
+  let table = null;
+  let selection = null;
+
+  // Em extensões do Base, getActiveTable() é o caminho preferido.
+  // Algumas versões/contextos retornam uma seleção sem tableId válido, então usamos fallbacks seguros.
+  try {
+    if (typeof bitable.base.getActiveTable === 'function') {
+      table = await bitable.base.getActiveTable();
+    }
+  } catch (e) {
+    console.warn('getActiveTable falhou:', e);
+  }
+
+  if (!table) {
+    try {
+      selection = await bitable.base.getSelection();
+      if (selection?.tableId) table = await bitable.base.getTableById(selection.tableId);
+    } catch (e) {
+      console.warn('getSelection/getTableById falhou:', e);
+    }
+  }
+
+  // Último fallback: se houver apenas uma tabela (ou a ativa não puder ser resolvida),
+  // procura uma tabela que contenha os campos obrigatórios do nosso mapa.
+  if (!table && typeof bitable.base.getTableMetaList === 'function') {
+    const tables = await bitable.base.getTableMetaList();
+    for (const meta of tables || []) {
+      try {
+        const candidate = await bitable.base.getTableById(meta.id);
+        const candidateFields = await candidate.getFieldMetaList();
+        const names = new Set(candidateFields.map(f => f.name));
+        if (REQUIRED.every(name => names.has(name))) { table = candidate; break; }
+      } catch (e) { console.warn('Tabela ignorada:', meta?.id, e); }
+    }
+  }
+
+  if (!table) throw new Error('Não consegui identificar a tabela do Base. Abra a tabela com os campos uf_destino, receita e pedidos e clique em Atualizar dados.');
+
   const metas = await table.getFieldMetaList();
   const byName = Object.fromEntries(metas.map(m => [m.name, m.id]));
   const missing = REQUIRED.filter(n => !byName[n]);
