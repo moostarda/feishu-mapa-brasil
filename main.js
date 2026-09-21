@@ -6,12 +6,16 @@ const FIELD = {
   ano: 'ano', mes: 'mes', executivo: 'executivo', time: 'time'
 };
 const REQUIRED = [FIELD.uf, FIELD.receita, FIELD.pedidos];
-const GEOJSON_URL = 'https://cdn.jsdelivr.net/gh/henriquemalvar/br-geojson@main/dist/estados.geojson';
+const GEOJSON_URLS = [
+  './estados.geojson',
+  'https://raw.githubusercontent.com/henriquemalvar/br-geojson/main/dist/estados.geojson',
+  'https://cdn.jsdelivr.net/gh/henriquemalvar/br-geojson@main/dist/estados.geojson'
+];
 const state = { rows: [], metric: 'ticket', filters: { ano:'', mes:'', executivo:'', time:'' }, map:null, layer:null, geojson:null };
 
 const app = document.querySelector('#app');
 app.innerHTML = `<main>
-<header><div><h1>Mapa Comercial Brasil <small style="font-size:12px;color:#2563eb">V4 DIAGNÓSTICO</small></h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
+<header><div><h1>Mapa Comercial Brasil <small style="font-size:12px;color:#2563eb">V5</small></h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
 <section class="controls">
 <label>Indicador<select id="metric"><option value="ticket">Ticket Médio</option><option value="receita">Receita</option><option value="pedidos">Pedidos</option><option value="pedidos5kg">Pedidos 5kg</option></select></label>
 <label>Ano<select id="ano"><option value="">Todos</option></select></label>
@@ -20,7 +24,7 @@ app.innerHTML = `<main>
 <label>Time<select id="time"><option value="">Todos</option></select></label>
 </section>
 <section class="cards"><div><span>Ticket médio</span><strong id="kpiTicket">—</strong></div><div><span>Receita</span><strong id="kpiReceita">—</strong></div><div><span>Pedidos</span><strong id="kpiPedidos">—</strong></div><div><span>UFs com dados</span><strong id="kpiUfs">—</strong></div></section>
-<div id="status">Carregando dados do Feishu…</div><details open id="diagBox" style="margin:10px 0;padding:12px;border:1px solid #d1d5db;border-radius:10px;background:#f9fafb"><summary><b>Diagnóstico V4</b></summary><pre id="diag" style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto"></pre></details><div id="map"></div></main>`;
+<div id="status">Carregando dados do Feishu…</div><div id="mapWrap"><div id="map"></div><div id="legend"></div></div></main>`;
 
 const num = v => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
@@ -71,7 +75,7 @@ async function getAllRecords(table) {
 async function loadRows() {
   diagLines.length = 0;
   setStatus('Carregando dados do Feishu…');
-  diag('Versão', 'V4');
+  diag('Versão', 'V5');
   diag('SDK bitable', !!bitable);
   diag('base disponível', !!bitable?.base);
   let table = null;
@@ -146,14 +150,40 @@ function aggregate(){ const out={}; for(const r of filtered()){ const x=out[r.uf
 function metricValue(x){ return x?.[state.metric] ?? 0; }
 function color(v,min,max){ if(!v) return '#e5e7eb'; const t=max===min?0.65:(v-min)/(max-min); return `hsl(213 85% ${90-(t*48)}%)`; }
 function featureUf(f){ return String(f.properties?.sigla ?? f.properties?.UF ?? f.properties?.uf ?? f.properties?.id ?? '').toUpperCase(); }
-async function ensureMap(){ if(state.map) return; if(!L) throw new Error('Leaflet não foi carregado. Verifique se o CDN é permitido na rede corporativa.'); state.map=L.map('map',{zoomControl:true,attributionControl:false}).setView([-14.5,-52.5],4); const res=await fetch(GEOJSON_URL); if(!res.ok) throw new Error('Não foi possível carregar o mapa das UFs.'); state.geojson=await res.json(); }
+async function loadGeoJson(){
+  let lastError = null;
+  for (const url of GEOJSON_URLS) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features) || data.features.length < 27) throw new Error('GeoJSON inválido/incompleto');
+      return data;
+    } catch (e) { lastError = e; console.warn('Falha ao carregar mapa:', url, e); }
+  }
+  throw new Error('Não foi possível carregar os limites das UFs. ' + (lastError?.message || ''));
+}
+async function ensureMap(){
+  if(state.map && state.geojson) return;
+  if(!L) throw new Error('Leaflet não foi carregado.');
+  if(!state.map) state.map=L.map('map',{zoomControl:true,attributionControl:false,minZoom:3,maxZoom:8,scrollWheelZoom:true}).setView([-14.5,-52.5],4);
+  state.geojson = await loadGeoJson();
+  setTimeout(()=>state.map.invalidateSize(), 50);
+}
+function updateLegend(min,max){
+  const el=document.querySelector('#legend'); if(!el) return;
+  const label={ticket:'Ticket Médio',receita:'Receita',pedidos:'Pedidos',pedidos5kg:'Pedidos 5kg'}[state.metric];
+  const fmt=v=>state.metric==='ticket'||state.metric==='receita'?brl(v):integer(v);
+  el.innerHTML=`<b>${label}</b><div class="legendScale"></div><div class="legendLabels"><span>${fmt(min)}</span><span>${fmt(max)}</span></div>`;
+}
+
 async function render(){
   const agg=aggregate(), vals=Object.values(agg).map(metricValue).filter(v=>v>0); const min=vals.length?Math.min(...vals):0, max=vals.length?Math.max(...vals):0;
   const totals=Object.values(agg).reduce((a,x)=>({receita:a.receita+x.receita,pedidos:a.pedidos+x.pedidos}),{receita:0,pedidos:0});
   document.querySelector('#kpiTicket').textContent=brl(totals.pedidos?totals.receita/totals.pedidos:0); document.querySelector('#kpiReceita').textContent=brl(totals.receita); document.querySelector('#kpiPedidos').textContent=integer(totals.pedidos); document.querySelector('#kpiUfs').textContent=Object.keys(agg).length;
   await ensureMap(); if(state.layer) state.layer.remove();
   state.layer=L.geoJSON(state.geojson,{style:f=>{const v=metricValue(agg[featureUf(f)]);return{fillColor:color(v,min,max),weight:1,color:'#fff',fillOpacity:.92};},onEachFeature:(f,l)=>{const uf=featureUf(f),x=agg[uf]||{receita:0,pedidos:0,pedidos5kg:0,ticket:0},name=f.properties?.nome||f.properties?.name||uf; l.bindTooltip(`<b>${escapeHtml(name)} (${escapeHtml(uf)})</b><br>Ticket médio: ${brl(x.ticket)}<br>Receita: ${brl(x.receita)}<br>Pedidos: ${integer(x.pedidos)}<br>Pedidos 5kg: ${integer(x.pedidos5kg)}`,{sticky:true}); l.on({mouseover:e=>e.target.setStyle({weight:2,color:'#111827'}),mouseout:e=>state.layer.resetStyle(e.target)});}}).addTo(state.map);
-  if(state.layer.getBounds().isValid()) state.map.fitBounds(state.layer.getBounds(),{padding:[10,10]});
+  if(state.layer.getBounds().isValid()) { state.map.invalidateSize(); state.map.fitBounds(state.layer.getBounds(),{padding:[18,18]}); } updateLegend(min,max);
 }
 
 document.querySelector('#metric').addEventListener('change',e=>{state.metric=e.target.value;render().catch(showError);});

@@ -1,1 +1,1 @@
-Feishu Mapa Brasil V4 - diagnóstico visível. Substitua os quatro arquivos no GitHub. A caixa Diagnóstico V4 mostra seleção, tabela ativa, lista de tabelas, campos e erros do SDK.
+Feishu Mapa Brasil V5\n- Corrige renderização do mapa das 27 UFs\n- Fallbacks de GeoJSON (local, GitHub Raw e jsDelivr)\n- Legenda dinâmica por indicador\n- Mantém filtros e cálculo ponderado do ticket médio\n
