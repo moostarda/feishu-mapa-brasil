@@ -11,7 +11,7 @@ const state = { rows: [], metric: 'ticket', filters: { ano:'', mes:'', executivo
 
 const app = document.querySelector('#app');
 app.innerHTML = `<main>
-<header><div><h1>Mapa Comercial Brasil</h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
+<header><div><h1>Mapa Comercial Brasil <small style="font-size:12px;color:#2563eb">V4 DIAGNÓSTICO</small></h1><p>Indicadores consolidados por UF</p></div><button id="reload">Atualizar dados</button></header>
 <section class="controls">
 <label>Indicador<select id="metric"><option value="ticket">Ticket Médio</option><option value="receita">Receita</option><option value="pedidos">Pedidos</option><option value="pedidos5kg">Pedidos 5kg</option></select></label>
 <label>Ano<select id="ano"><option value="">Todos</option></select></label>
@@ -20,7 +20,7 @@ app.innerHTML = `<main>
 <label>Time<select id="time"><option value="">Todos</option></select></label>
 </section>
 <section class="cards"><div><span>Ticket médio</span><strong id="kpiTicket">—</strong></div><div><span>Receita</span><strong id="kpiReceita">—</strong></div><div><span>Pedidos</span><strong id="kpiPedidos">—</strong></div><div><span>UFs com dados</span><strong id="kpiUfs">—</strong></div></section>
-<div id="status">Carregando dados do Feishu…</div><div id="map"></div></main>`;
+<div id="status">Carregando dados do Feishu…</div><details open id="diagBox" style="margin:10px 0;padding:12px;border:1px solid #d1d5db;border-radius:10px;background:#f9fafb"><summary><b>Diagnóstico V4</b></summary><pre id="diag" style="white-space:pre-wrap;font-size:12px;max-height:240px;overflow:auto"></pre></details><div id="map"></div></main>`;
 
 const num = v => {
   if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
@@ -38,6 +38,15 @@ const text = v => {
 };
 const brl = v => new Intl.NumberFormat('pt-BR',{style:'currency',currency:'BRL'}).format(v||0);
 const integer = v => new Intl.NumberFormat('pt-BR',{maximumFractionDigits:0}).format(v||0);
+const diagLines = [];
+function diag(label, value='') {
+  let out;
+  try { out = typeof value === 'string' ? value : JSON.stringify(value, (k,v)=> typeof v === 'function' ? '[function]' : v, 2); }
+  catch { out = String(value); }
+  diagLines.push(`${label}: ${out}`);
+  const el = document.querySelector('#diag'); if (el) el.textContent = diagLines.join('\n');
+}
+function errText(e){ return `${e?.name||'Error'}: ${e?.message||String(e)}`; }
 
 async function getAllRecords(table) {
   // Prefer the SDK's record list; fall back to IDs + getRecord when necessary.
@@ -60,50 +69,63 @@ async function getAllRecords(table) {
 }
 
 async function loadRows() {
+  diagLines.length = 0;
   setStatus('Carregando dados do Feishu…');
+  diag('Versão', 'V4');
+  diag('SDK bitable', !!bitable);
+  diag('base disponível', !!bitable?.base);
   let table = null;
   let selection = null;
 
-  // Em extensões do Base, getActiveTable() é o caminho preferido.
-  // Algumas versões/contextos retornam uma seleção sem tableId válido, então usamos fallbacks seguros.
+  try {
+    selection = await bitable.base.getSelection();
+    diag('getSelection()', selection);
+  } catch (e) { diag('getSelection() ERRO', errText(e)); }
+
   try {
     if (typeof bitable.base.getActiveTable === 'function') {
       table = await bitable.base.getActiveTable();
-    }
-  } catch (e) {
-    console.warn('getActiveTable falhou:', e);
-  }
+      diag('getActiveTable()', table ? 'objeto de tabela retornado' : 'null/undefined');
+    } else diag('getActiveTable()', 'método indisponível');
+  } catch (e) { diag('getActiveTable() ERRO', errText(e)); }
 
-  if (!table) {
+  // Importante: só usa getTableById se o tableId realmente existir.
+  if (!table && selection?.tableId) {
     try {
-      selection = await bitable.base.getSelection();
-      if (selection?.tableId) table = await bitable.base.getTableById(selection.tableId);
-    } catch (e) {
-      console.warn('getSelection/getTableById falhou:', e);
-    }
+      table = await bitable.base.getTableById(selection.tableId);
+      diag('getTableById(selection.tableId)', 'OK');
+    } catch (e) { diag('getTableById(selection.tableId) ERRO', errText(e)); }
   }
 
-  // Último fallback: se houver apenas uma tabela (ou a ativa não puder ser resolvida),
-  // procura uma tabela que contenha os campos obrigatórios do nosso mapa.
-  if (!table && typeof bitable.base.getTableMetaList === 'function') {
-    const tables = await bitable.base.getTableMetaList();
-    for (const meta of tables || []) {
-      try {
-        const candidate = await bitable.base.getTableById(meta.id);
-        const candidateFields = await candidate.getFieldMetaList();
-        const names = new Set(candidateFields.map(f => f.name));
-        if (REQUIRED.every(name => names.has(name))) { table = candidate; break; }
-      } catch (e) { console.warn('Tabela ignorada:', meta?.id, e); }
-    }
-  }
+  // Enumera as tabelas para diagnosticar o contexto e, se possível, localizar pelos campos.
+  try {
+    if (typeof bitable.base.getTableMetaList === 'function') {
+      const tables = await bitable.base.getTableMetaList();
+      diag('getTableMetaList()', (tables || []).map(t => ({id:t.id, name:t.name})));
+      if (!table) {
+        for (const meta of tables || []) {
+          try {
+            const candidate = await bitable.base.getTableById(meta.id);
+            const candidateFields = await candidate.getFieldMetaList();
+            const names = candidateFields.map(f => f.name);
+            diag(`Campos tabela ${meta.name || meta.id}`, names);
+            if (REQUIRED.every(name => names.includes(name))) { table = candidate; diag('Tabela escolhida por campos', meta.name || meta.id); break; }
+          } catch (e) { diag(`Tabela ${meta.name || meta.id} ERRO`, errText(e)); }
+        }
+      }
+    } else diag('getTableMetaList()', 'método indisponível');
+  } catch (e) { diag('getTableMetaList() ERRO', errText(e)); }
 
   if (!table) throw new Error('Não consegui identificar a tabela do Base. Abra a tabela com os campos uf_destino, receita e pedidos e clique em Atualizar dados.');
 
+  diag('Tabela resolvida', 'SIM');
   const metas = await table.getFieldMetaList();
+  diag('Campos da tabela resolvida', metas.map(m=>({name:m.name,id:m.id,type:m.type})));
   const byName = Object.fromEntries(metas.map(m => [m.name, m.id]));
   const missing = REQUIRED.filter(n => !byName[n]);
   if (missing.length) throw new Error(`Campos obrigatórios não encontrados: ${missing.join(', ')}`);
   const records = await getAllRecords(table);
+  diag('Registros retornados', records.length);
   state.rows = records.map(r => {
     const f = r.fields || r.record?.fields || {};
     const value = name => byName[name] ? f[byName[name]] : '';
